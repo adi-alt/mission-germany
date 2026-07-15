@@ -1,58 +1,39 @@
 'use client';
 
+// Users admin section — table layout modeled on the internal-platform Users page:
+// search pill, inline invite row, Email · Name · Status · Role · Actions columns.
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, onSnapshot, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { useApp } from '../providers';
+import { Dropdown } from '../ui';
 
 type Profile = { id: string; email?: string; name?: string; profileImage?: string; type?: string; status?: string; lastSeen?: any; invitedBy?: string };
 
 export default function UsersPage() {
-  const [me, setMe] = useState<User | null>(null);
-  const [role, setRole] = useState('');
+  const { user, role, authReady } = useApp();
 
-  useEffect(() => onAuthStateChanged(auth, async (u) => {
-    setMe(u);
-    if (u) setRole((await getDoc(doc(db, 'users', (u.email ?? '').toLowerCase()))).data()?.type ?? 'member');
-    else setRole('none');
-  }), []);
-
-  if (!role) return null; // auth still resolving
-  if (!me || role !== 'admin') {
+  if (!authReady) return null;
+  if (!user || role !== 'admin') {
     return (
-      <div className="login">
-        <h1>Users</h1>
-        <p>Admins only.</p>
-        <Link className="link-btn" href="/">← Back to the list</Link>
-      </div>
+      <main>
+        <div className="page-title">Users</div>
+        <p className="meta-line">Admins only.</p>
+        <p style={{ marginTop: 12 }}><Link className="link-btn" href="/">← Back to the list</Link></p>
+      </main>
     );
   }
-
-  return (
-    <div className="shell">
-      <div />
-      <div>
-        <div className="topbar">
-          <Link className="hamburger" href="/">←</Link>
-          <h1>Users</h1>
-        </div>
-        <main>
-          <div className="progress-wrap">
-            <div className="page-title">Users</div>
-          </div>
-          <UsersPanel me={me} />
-        </main>
-      </div>
-    </div>
-  );
+  return <UsersTable myEmail={(user.email ?? '').toLowerCase()} />;
 }
 
-function UsersPanel({ me }: { me: User }) {
+function UsersTable({ myEmail }: { myEmail: string }) {
   const [users, setUsers] = useState<Profile[]>([]);
   const [presence, setPresence] = useState<Record<string, any>>({});
+  const [search, setSearch] = useState('');
   const [email, setEmail] = useState('');
   const [type, setType] = useState('member');
+  const [inviting, setInviting] = useState(false);
 
   useEffect(() => {
     const subs = [
@@ -72,64 +53,82 @@ function UsersPanel({ me }: { me: User }) {
     e.preventDefault();
     const em = email.trim().toLowerCase();
     if (!em) return;
-    await setDoc(doc(db, 'users', em), { email: em, type, status: 'invited', invitedBy: me.email, invitedAt: serverTimestamp() });
-    setEmail('');
+    setInviting(true);
+    try {
+      await setDoc(doc(db, 'users', em), { email: em, type, status: 'invited', invitedBy: myEmail, invitedAt: serverTimestamp() });
+      setEmail('');
+    } finally { setInviting(false); }
   };
 
-  const joined = users.filter((u) => u.status === 'joined');
-  const pending = users.filter((u) => u.status !== 'joined');
+  const q = search.trim().toLowerCase();
+  const shown = users.filter((u) => !q || u.id.includes(q) || (u.name ?? '').toLowerCase().includes(q));
 
   return (
-    <>
-      <form className="add-form" onSubmit={invite}>
-        <input type="email" placeholder="Invite by email…" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <select value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="member">member</option>
-          <option value="admin">admin</option>
-        </select>
-        <button type="submit">Invite</button>
+    <main style={{ maxWidth: 900 }}>
+      <div className="page-title" style={{ margin: '10px 0 14px' }}>Users</div>
+
+      <form className="invite-row" onSubmit={invite}>
+        <input type="email" required placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <Dropdown value={type} options={['member', 'admin']} onChange={setType} />
+        <button type="submit" disabled={inviting}>{inviting ? 'Inviting…' : 'Send invite'}</button>
       </form>
 
-      {joined.map((u) => (
-        <div className="watch-card" key={u.id}>
-          <div className="watch-top">
-            {u.profileImage && <img src={u.profileImage} alt="" width={32} height={32} style={{ borderRadius: '50%' }} referrerPolicy="no-referrer" />}
-            <h3>
-              <span style={{ color: online(u.id) ? '#22c55e' : 'var(--muted)', marginRight: 6 }}>●</span>
-              {u.name ?? u.email}
-            </h3>
-            <select
-              value={u.type ?? 'member'}
-              disabled={u.id === me.email?.toLowerCase()} // don't demote yourself
-              onChange={(e) => updateDoc(doc(db, 'users', u.id), { type: e.target.value })}
-            >
-              <option value="member">member</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
-          <div className="meta-line">
-            {u.email} · {online(u.id) ? 'online now' : u.lastSeen?.toDate ? `last seen ${u.lastSeen.toDate().toLocaleString()}` : 'never seen'}
-          </div>
-          {u.id !== me.email?.toLowerCase() && (
-            <button
-              className="delete-btn"
-              onClick={() => { deleteDoc(doc(db, 'users', u.id)); deleteDoc(doc(db, 'lists', u.id)); }}
-            >Remove user</button>
-          )}
-        </div>
-      ))}
+      <div className="search-pill">
+        <span>🔍</span>
+        <input placeholder="Search by email or name…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
 
-      {pending.length > 0 && <div className="side-label">Pending invites</div>}
-      {pending.map((u) => (
-        <div className="watch-card" key={u.id}>
-          <div className="watch-top">
-            <h3>{u.id}</h3>
-            <span className="badge">{u.type}</span>
-          </div>
-          <div className="meta-line">invited by {u.invitedBy ?? '—'} · not signed in yet</div>
-          <button className="delete-btn" onClick={() => deleteDoc(doc(db, 'users', u.id))}>Revoke invite</button>
-        </div>
-      ))}
-    </>
+      <div className="table-wrap">
+        <table className="users-table">
+          <thead>
+            <tr>
+              <th>Email</th><th>Name</th><th>Status</th><th>Role</th><th style={{ textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((u) => (
+              <tr key={u.id}>
+                <td>
+                  <span className="avatar-wrap">
+                    {u.profileImage
+                      ? <img src={u.profileImage} alt="" referrerPolicy="no-referrer" />
+                      : <span className="avatar-fallback">{(u.name ?? u.id).slice(0, 2).toUpperCase()}</span>}
+                    <span className={`presence-dot${online(u.id) ? ' on' : ''}`} />
+                  </span>
+                  {u.id}
+                </td>
+                <td className="td-muted">{u.name ?? '—'}</td>
+                <td>
+                  <span className={`status-chip ${u.status === 'joined' ? 'joined' : 'pending'}`}>
+                    {u.status === 'joined' ? (online(u.id) ? 'online' : 'joined') : 'invited'}
+                  </span>
+                </td>
+                <td>
+                  {u.id === myEmail
+                    ? <span className="status-chip">admin (you)</span>
+                    : <Dropdown value={u.type ?? 'member'} options={['member', 'admin']} onChange={(t) => updateDoc(doc(db, 'users', u.id), { type: t })} />}
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  {u.id !== myEmail && (
+                    <button
+                      className="delete-btn"
+                      title={u.status === 'joined' ? 'Remove user' : 'Revoke invite'}
+                      onClick={() => { deleteDoc(doc(db, 'users', u.id)); deleteDoc(doc(db, 'lists', u.id)); }}
+                    >{u.status === 'joined' ? 'Remove' : 'Revoke'}</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {!shown.length && (
+              <tr><td colSpan={5} className="td-muted" style={{ textAlign: 'center', padding: 28 }}>No users match.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="disclaimer">
+        Invited people sign in with Google using the invited email — their account and packing list are created on first sign-in.
+      </p>
+    </main>
   );
 }

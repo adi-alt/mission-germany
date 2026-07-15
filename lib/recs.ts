@@ -196,6 +196,30 @@ export function fmt(v: number, cur: '₹' | '€') {
   return cur === '₹' ? `₹${v.toLocaleString('en-IN')}` : `€${v}`;
 }
 
+// Detects what the user pasted into a product field: a store link or a brand/product name.
+const PLATFORMS: [RegExp, string][] = [
+  [/amazon\./i, 'Amazon'], [/flipkart\./i, 'Flipkart'], [/myntra\./i, 'Myntra'],
+  [/idealo\./i, 'idealo'], [/ikea\./i, 'IKEA'], [/decathlon\./i, 'Decathlon'],
+  [/google\./i, 'Google'], [/lenskart\./i, 'Lenskart'], [/croma\./i, 'Croma'],
+];
+export function parseProductInput(input: string): { url?: string; platform?: string; query?: string } {
+  const s = input.trim();
+  if (!s) return {};
+  if (/^https?:\/\//i.test(s)) {
+    const platform = PLATFORMS.find(([re]) => re.test(s))?.[1] ?? new URL(s).hostname.replace(/^www\./, '');
+    return { url: s, platform };
+  }
+  return { query: s };
+}
+
+// Buy links for an item: the pasted link first (if any), then live searches —
+// on the brand/product the user typed, falling back to the item name.
+export function productLinks(name: string, buy: 'IN' | 'DE' | 'HAVE', input?: string) {
+  const p = parseProductInput(input ?? '');
+  const links = p.url ? [{ label: `Open on ${p.platform}`, url: p.url }] : [];
+  return [...links, ...searchLinks(p.query || name, buy)];
+}
+
 export function searchLinks(name: string, buy: 'IN' | 'DE' | 'HAVE') {
   const q = encodeURIComponent(name);
   return buy === 'DE'

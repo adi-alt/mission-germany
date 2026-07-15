@@ -1,109 +1,34 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
-import { auth, db, googleProvider } from '@/lib/firebase';
-import type { SeedItem } from '@/lib/seed'; // type only — item data lives in Firestore
-import { basePrice, fmt, forecast, RECS, searchLinks, Tier } from '@/lib/recs';
-
-type Item = SeedItem & { id: string; starred?: boolean };
+import { fmt, productLinks, RECS, Tier } from '@/lib/recs';
+import { Item, itemForecast, useApp } from './providers';
+import { useView, VIEWS } from './shell';
+import { Dropdown, DatePicker } from './ui';
 
 const BUY_LABEL = { IN: '🇮🇳 India', DE: '🇩🇪 Germany', HAVE: 'Own it' } as const;
-const VIEWS = [
-  { id: 'all', label: 'All items', icon: '📦' },
-  { id: 'starred', label: 'Watchlist', icon: '⭐' },
-  { id: 'in', label: 'Buy in India', icon: '🇮🇳' },
-  { id: 'de', label: 'Buy in Germany', icon: '🇩🇪' },
-  { id: 'packed', label: 'Done', icon: '✅' },
-] as const;
-type ViewId = string;
 
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
 export default function Home() {
-  const [user, setUser] = useState<User | null>(null);
-  const [role, setRole] = useState('member');
-  const [authReady, setAuthReady] = useState(false);
-  const [items, setItems] = useState<Item[] | null>(null);
-  const [view, setView] = useState<ViewId>('all');
-  const [sideOpen, setSideOpen] = useState(false);
+  const { items } = useApp();
+  const { view } = useView();
   const [openId, setOpenId] = useState<string | null>(null);
   const [tier, setTier] = useState<Tier | 'All'>('All');
+  const [search, setSearch] = useState('');
   const [newName, setNewName] = useState('');
   const [newCat, setNewCat] = useState('');
+  const { save } = useApp();
 
-  const myEmail = (user?.email ?? '').toLowerCase();
-
-  // Invite-gated login: the users doc (keyed by email) IS the invite.
-  // No doc → not invited → signed out. First sign-in flips status to 'joined'.
-  useEffect(() => onAuthStateChanged(auth, async (u) => {
-    if (!u) { setUser(null); setAuthReady(true); return; }
-    try {
-      const em = (u.email ?? '').toLowerCase();
-      const uref = doc(db, 'users', em);
-      const snap = await getDoc(uref);
-      if (!snap.exists()) throw new Error('You are not invited to this app. Ask an admin to invite you.');
-      setRole(snap.data().type ?? 'member');
-      // First join: flip invited → joined and create this user's list at the same
-      // instant, copied from the config/seedList starter template
-      if (snap.data().status !== 'joined') {
-        const lref = doc(db, 'lists', em);
-        if (!(await getDoc(lref)).exists()) {
-          const tpl = await getDoc(doc(db, 'config', 'seedList'));
-          await setDoc(lref, { items: tpl.data()?.items ?? [] });
-        }
-      }
-      await setDoc(uref, {
-        status: 'joined', name: u.displayName, profileImage: u.photoURL, lastSeen: serverTimestamp(),
-      }, { merge: true });
-      setUser(u);
-    } catch (e: any) {
-      await signOut(auth);
-      setUser(null);
-      alert(e.message);
-    }
-    setAuthReady(true);
-  }), []);
-
-  // The whole packing list lives in one doc: lists/{email} { items: [...] },
-  // created at the moment the user first joins.
-  useEffect(() => {
-    if (!myEmail) { setItems(null); return; }
-    return onSnapshot(doc(db, 'lists', myEmail), (snap) => {
-      const list = ((snap.data()?.items ?? []) as Item[]).slice();
-      list.sort((a, b) => a.order - b.order);
-      setItems(list);
-    });
-  }, [myEmail]);
-
-  if (!authReady) return <Shell skeleton />;
-
-  if (!user) {
-    return (
-      <motion.div className="login" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-        <h1>Mission Germany 🇩🇪</h1>
-        <p>Your RWTH Aachen packing & shopping list — best product picks, live search, and sale-calendar price forecasts.</p>
-        <button className="google-btn" onClick={() => signInWithPopup(auth, googleProvider).catch((e) => alert(e.message))}>
-          Continue with Google
-        </button>
-      </motion.div>
-    );
-  }
-
-  if (!items) return <Shell skeleton />;
-
-  const save = (next: Item[]) => setDoc(doc(db, 'lists', myEmail), { items: next });
-  const patchItem = (id: string, patch: Partial<Item>) => save(items.map((i) => (i.id === id ? { ...i, ...patch } : i)));
-  const removeItem = (id: string) => save(items.filter((i) => i.id !== id));
+  if (!items) return null; // shell shows the skeleton until auth+data resolve
 
   const packed = items.filter((i) => i.packed).length;
   const cats = items.map((i) => i.category).filter((c, i, a) => a.indexOf(c) === i);
 
-  const filtered =
+  const inView =
     view === 'all' ? items
     : view === 'starred' ? items.filter((i) => i.starred)
     : view === 'in' ? items.filter((i) => i.buy === 'IN' && !i.packed)
@@ -111,8 +36,12 @@ export default function Home() {
     : view === 'packed' ? items.filter((i) => i.packed)
     : items.filter((i) => i.category === view);
 
-  const viewLabel = VIEWS.find((v) => v.id === view)?.label ?? view;
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? inView.filter((i) => [i.name, i.category, i.notes, i.link ?? ''].some((s) => s.toLowerCase().includes(q)))
+    : inView;
 
+  const viewLabel = VIEWS.find((v) => v.id === view)?.label ?? view;
   const toggleOpen = (id: string) => { setTier('All'); setOpenId(openId === id ? null : id); };
 
   const addItem = async (e: React.FormEvent) => {
@@ -126,100 +55,47 @@ export default function Home() {
     setNewName('');
   };
 
-  const nav = (id: ViewId) => { setView(id); setSideOpen(false); };
-
-  const sidebar = (
-    <aside>
-      <div className="side-title">Mission Germany 🇩🇪</div>
-      <div className="side-mail">{user.email}</div>
-      {VIEWS.map((v) => (
-        <button key={v.id} className={`nav-btn${view === v.id ? ' active' : ''}`} onClick={() => nav(v.id)}>
-          <span>{v.icon}</span> {v.label}
-          <span className="count">
-            {v.id === 'all' ? items.length
-              : v.id === 'starred' ? items.filter((i) => i.starred).length
-              : v.id === 'in' ? items.filter((i) => i.buy === 'IN' && !i.packed).length
-              : v.id === 'de' ? items.filter((i) => i.buy === 'DE' && !i.packed).length
-              : packed}
-          </span>
-        </button>
-      ))}
-      {role === 'admin' && (
-        <Link className="nav-btn" href="/Users"><span>👥</span> Users</Link>
-      )}
-      <div className="side-label">Categories</div>
-      {cats.map((c) => (
-        <button key={c} className={`nav-btn${view === c ? ' active' : ''}`} onClick={() => nav(c)}>
-          {c}
-          <span className="count">{items.filter((i) => i.category === c && i.packed).length}/{items.filter((i) => i.category === c).length}</span>
-        </button>
-      ))}
-      <div className="side-foot">
-        <button className="signout" onClick={() => signOut(auth)}>Sign out</button>
-      </div>
-    </aside>
-  );
-
   return (
-    <div className="shell">
-      {/* desktop sidebar */}
-      <div className="side-desktop">{sidebar}</div>
+    <main>
+      <div className="progress-wrap">
+        <div className="page-title">{viewLabel}</div>
+        <div className="progress-bar"><div className="progress-fill" style={{ width: `${(packed / (items.length || 1)) * 100}%` }} /></div>
+        <div className="progress-label">{packed} of {items.length} items done</div>
+      </div>
 
-      {/* mobile sidebar */}
-      <AnimatePresence>
-        {sideOpen && (
-          <>
-            <motion.div className="backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSideOpen(false)} />
-            <motion.div initial={{ x: -300 }} animate={{ x: 0 }} exit={{ x: -300 }} transition={{ type: 'tween', duration: 0.22 }} style={{ position: 'fixed', zIndex: 40 }}>
-              {sidebar}
-            </motion.div>
-          </>
-        )}
+      <div className="search-pill">
+        <span>🔍</span>
+        <input placeholder="Search items…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+
+      <AnimatePresence mode="wait">
+        <motion.div key={view} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+          {q && !filtered.length
+            ? <div className="empty">No items match “{search.trim()}”.</div>
+            : view === 'starred'
+            ? <Watchlist items={filtered} />
+            : <GroupedList items={filtered} cats={cats} openId={openId} toggleOpen={toggleOpen} tier={tier} setTier={setTier} grouped={view === 'all' || view === 'in' || view === 'de' || view === 'packed'} />}
+        </motion.div>
       </AnimatePresence>
 
-      <div>
-        <div className="topbar">
-          <button className="hamburger" onClick={() => setSideOpen(true)}>☰</button>
-          <h1>{viewLabel}</h1>
-        </div>
+      <form className="add-form" onSubmit={addItem}>
+        <input placeholder="Add an item…" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <Dropdown value={newCat || cats[0] || ''} options={cats} onChange={setNewCat} />
+        <button type="submit">Add</button>
+      </form>
 
-        <main>
-          <div className="progress-wrap">
-            <div className="page-title">{viewLabel}</div>
-            <div className="progress-bar"><div className="progress-fill" style={{ width: `${(packed / items.length) * 100}%` }} /></div>
-            <div className="progress-label">{packed} of {items.length} items done</div>
-          </div>
-
-          <AnimatePresence mode="wait">
-            <motion.div key={view} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
-              {view === 'starred'
-                ? <Watchlist items={filtered} onPatch={patchItem} />
-                : <GroupedList items={filtered} cats={cats} onPatch={patchItem} onRemove={removeItem} openId={openId} toggleOpen={toggleOpen} tier={tier} setTier={setTier} grouped={view === 'all' || view === 'in' || view === 'de' || view === 'packed'} />}
-            </motion.div>
-          </AnimatePresence>
-
-          <form className="add-form" onSubmit={addItem}>
-            <input placeholder="Add an item…" value={newName} onChange={(e) => setNewName(e.target.value)} />
-            <select value={newCat || cats[0]} onChange={(e) => setNewCat(e.target.value)}>
-              {cats.map((c) => <option key={c}>{c}</option>)}
-            </select>
-            <button type="submit">Add</button>
-          </form>
-
-          <p className="disclaimer">
-            Prices are typical market estimates; sale dates are expected windows based on previous years.
-            Use the search buttons on each item to check live prices before buying.
-          </p>
-        </main>
-      </div>
-    </div>
+      <p className="disclaimer">
+        Prices are typical market estimates; sale dates are expected windows based on previous years.
+        Use the search buttons on each item to check live prices before buying.
+      </p>
+    </main>
   );
 }
 
 /* ---------- Grouped item list ---------- */
 function GroupedList(props: {
-  items: Item[]; cats: string[]; onPatch: (id: string, patch: Partial<Item>) => void; onRemove: (id: string) => void;
-  openId: string | null; toggleOpen: (id: string) => void; tier: Tier | 'All'; setTier: (t: Tier | 'All') => void; grouped: boolean;
+  items: Item[]; cats: string[]; openId: string | null;
+  toggleOpen: (id: string) => void; tier: Tier | 'All'; setTier: (t: Tier | 'All') => void; grouped: boolean;
 }) {
   const { items, cats, grouped } = props;
   if (!items.length) return <div className="empty">Nothing here yet.</div>;
@@ -242,17 +118,16 @@ function GroupedList(props: {
 }
 
 /* ---------- Single item ---------- */
-function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: {
-  it: Item; onPatch: (id: string, patch: Partial<Item>) => void; onRemove: (id: string) => void;
-  openId: string | null; toggleOpen: (id: string) => void;
+function ItemCard({ it, openId, toggleOpen, tier, setTier }: {
+  it: Item; openId: string | null; toggleOpen: (id: string) => void;
   tier: Tier | 'All'; setTier: (t: Tier | 'All') => void;
 }) {
+  const { patchItem, removeItem } = useApp();
+  const [draft, setDraft] = useState(it.link ?? '');
   const open = openId === it.id;
   const recs = RECS[it.name] ?? [];
   const shownRecs = tier === 'All' ? recs : recs.filter((r) => r.tier === tier);
-  const base = basePrice(it.name, it.priceINR, it.priceEUR);
-  const market = it.buy === 'DE' ? 'DE' : 'IN';
-  const fc = base && it.buy !== 'HAVE' ? forecast(base.v, market, it.category) : [];
+  const { base, fc } = itemForecast(it);
   const best = fc.length ? fc.reduce((m, f) => (f.est < m.est ? f : m)) : null;
 
   return (
@@ -261,7 +136,7 @@ function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: 
         <input
           type="checkbox" checked={it.packed}
           onClick={(e) => e.stopPropagation()}
-          onChange={() => onPatch(it.id, { packed: !it.packed })}
+          onChange={() => patchItem(it.id, { packed: !it.packed })}
         />
         <span className={`item-name${it.packed ? ' done' : ''}`}>{it.name}</span>
         {it.qty && it.qty !== '1' && <span className="item-qty">{it.qty}</span>}
@@ -270,7 +145,7 @@ function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: 
           <button
             className={`star-btn${it.starred ? ' on' : ''}`}
             title="Watch price"
-            onClick={(e) => { e.stopPropagation(); onPatch(it.id, { starred: !it.starred }); }}
+            onClick={(e) => { e.stopPropagation(); patchItem(it.id, { starred: !it.starred }); }}
           >★</button>
         )}
       </div>
@@ -284,6 +159,35 @@ function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: 
               )}
               {it.bestTime && <div className="meta-line"><b>Best time:</b> {it.bestTime}</div>}
               {it.notes && <div className="meta-line"><b>Note:</b> {it.notes}</div>}
+
+              {it.buy !== 'HAVE' && (
+                <>
+                  {/* brand / product name / any store link — powers the buy links below */}
+                  <form
+                    className="prod-form"
+                    onSubmit={(e) => { e.preventDefault(); patchItem(it.id, { link: draft.trim() }); }}
+                  >
+                    <input
+                      placeholder="Brand, product, or paste any link (Amazon, Flipkart, …)"
+                      value={draft} onChange={(e) => setDraft(e.target.value)}
+                      onBlur={() => { if (draft.trim() !== (it.link ?? '')) patchItem(it.id, { link: draft.trim() }); }}
+                      onPaste={(e) => { const t = e.clipboardData.getData('text').trim(); setDraft(t); patchItem(it.id, { link: t }); }}
+                    />
+                    <button type="submit">Save</button>
+                  </form>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <DatePicker
+                      value={it.targetDate ?? ''}
+                      placeholder="Buy before…"
+                      onChange={(d) => patchItem(it.id, { targetDate: d })}
+                    />
+                    <Link className="detail-link" href={`/product?product_id=${it.id}`} onClick={(e) => e.stopPropagation()}>
+                      Full details & price graph →
+                    </Link>
+                  </div>
+                </>
+              )}
 
               {recs.length > 0 && (
                 <div className="recs">
@@ -307,21 +211,25 @@ function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: 
 
               {best && (
                 <div className="meta-line">
-                  <b>Cheapest upcoming:</b> ~{fmt(best.est, base!.cur)} during {best.sale.name}{' '}
+                  <b>Cheapest{it.targetDate ? ` before ${fmtDate(it.targetDate)}` : ' upcoming'}:</b>{' '}
+                  ~{fmt(best.est, base!.cur)} during {best.sale.name}{' '}
                   ({fmtDate(best.sale.start)}–{fmtDate(best.sale.end)}{best.live ? ', live now' : `, in ${best.days} days`})
                   {!it.starred && ' — star ★ to watch'}
                 </div>
               )}
+              {!fc.length && it.targetDate && it.buy !== 'HAVE' && (
+                <div className="meta-line">No sale windows before {fmtDate(it.targetDate)} — clear the date to see all.</div>
+              )}
 
               {it.buy !== 'HAVE' && (
                 <div className="links">
-                  {searchLinks(it.name, it.buy).map((l) => (
+                  {productLinks(it.name, it.buy, it.link).map((l) => (
                     <a key={l.label} className="link-btn" href={l.url} target="_blank" rel="noreferrer">🔍 {l.label}</a>
                   ))}
                 </div>
               )}
 
-              <button className="delete-btn" onClick={() => onRemove(it.id)}>Remove item</button>
+              <button className="delete-btn" onClick={() => removeItem(it.id)}>Remove item</button>
             </div>
           </motion.div>
         )}
@@ -331,22 +239,22 @@ function ItemCard({ it, onPatch, onRemove, openId, toggleOpen, tier, setTier }: 
 }
 
 /* ---------- Watchlist with price forecasts ---------- */
-function Watchlist({ items, onPatch }: { items: Item[]; onPatch: (id: string, patch: Partial<Item>) => void }) {
+function Watchlist({ items }: { items: Item[] }) {
+  const { patchItem } = useApp();
   if (!items.length) {
     return <div className="empty">Your watchlist is empty.<br />Star ★ any product to track when it will be cheapest.</div>;
   }
   return (
     <>
       {items.map((it) => {
-        const base = basePrice(it.name, it.priceINR, it.priceEUR);
-        const fc = base ? forecast(base.v, it.buy === 'DE' ? 'DE' : 'IN', it.category) : [];
+        const { base, fc } = itemForecast(it);
         const bestEst = fc.length ? Math.min(...fc.map((f) => f.est)) : 0;
         return (
           <motion.div className="watch-card" key={it.id} layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
             <div className="watch-top">
-              <h3>{it.name}</h3>
+              <h3><Link className="detail-link" href={`/product?product_id=${it.id}`}>{it.name}</Link></h3>
               {base && <span className="now">now ~{fmt(base.v, base.cur)}</span>}
-              <button className="star-btn on" title="Unwatch" onClick={() => onPatch(it.id, { starred: false })}>★</button>
+              <button className="star-btn on" title="Unwatch" onClick={() => patchItem(it.id, { starred: false })}>★</button>
             </div>
             {fc.length ? (
               <div className="forecast">
@@ -364,10 +272,10 @@ function Watchlist({ items, onPatch }: { items: Item[]; onPatch: (id: string, pa
                 ))}
               </div>
             ) : (
-              <div className="meta-line">No price data for this item — add it to a search below.</div>
+              <div className="meta-line">No price data for this item — open the details page to add a link.</div>
             )}
             <div className="links" style={{ marginTop: 10 }}>
-              {searchLinks(it.name, it.buy).map((l) => (
+              {productLinks(it.name, it.buy, it.link).map((l) => (
                 <a key={l.label} className="link-btn" href={l.url} target="_blank" rel="noreferrer">🔍 {l.label}</a>
               ))}
             </div>
@@ -375,26 +283,5 @@ function Watchlist({ items, onPatch }: { items: Item[]; onPatch: (id: string, pa
         );
       })}
     </>
-  );
-}
-
-/* ---------- Skeleton shell ---------- */
-function Shell({ skeleton }: { skeleton: boolean }) {
-  return (
-    <div className="shell">
-      <aside>
-        <div className="sk" style={{ height: 22, width: 160, margin: '0 10px 10px' }} />
-        {Array.from({ length: 9 }).map((_, i) => (
-          <div key={i} className="sk" style={{ height: 30, margin: '3px 10px' }} />
-        ))}
-      </aside>
-      <main>
-        <div className="sk" style={{ height: 28, width: 180, marginBottom: 16 }} />
-        <div className="sk" style={{ height: 8, marginBottom: 24 }} />
-        {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="sk" style={{ height: 46, marginBottom: 8, borderRadius: 12 }} />
-        ))}
-      </main>
-    </div>
   );
 }
