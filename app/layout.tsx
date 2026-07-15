@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import Presence from './presence';
 
 export const metadata: Metadata = {
   title: 'Mission Germany 🇩🇪',
@@ -16,7 +17,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><Presence />{children}</body>
     </html>
   );
 }

@@ -1,13 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
 import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
-import {
-  collection, deleteDoc, doc, getDoc, onSnapshot, serverTimestamp, setDoc, updateDoc,
-} from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { auth, db, googleProvider } from '@/lib/firebase';
-import type { SeedItem } from '@/lib/seed'; // type only — data lives in the /seedItems collection
+import type { SeedItem } from '@/lib/seed'; // type only — item data lives in Firestore
 import { basePrice, fmt, forecast, RECS, searchLinks, Tier } from '@/lib/recs';
 
 type Item = SeedItem & { id: string; starred?: boolean };
@@ -49,11 +48,14 @@ export default function Home() {
       const snap = await getDoc(uref);
       if (!snap.exists()) throw new Error('You are not invited to this app. Ask an admin to invite you.');
       setRole(snap.data().type ?? 'member');
-      // First join: flip invited → joined and create this user's list at the same instant
-      // (skip if a list was pre-provisioned, e.g. the bootstrap admin's seeded list)
+      // First join: flip invited → joined and create this user's list at the same
+      // instant, copied from the config/seedList starter template
       if (snap.data().status !== 'joined') {
         const lref = doc(db, 'lists', em);
-        if (!(await getDoc(lref)).exists()) await setDoc(lref, { items: [] });
+        if (!(await getDoc(lref)).exists()) {
+          const tpl = await getDoc(doc(db, 'config', 'seedList'));
+          await setDoc(lref, { items: tpl.data()?.items ?? [] });
+        }
       }
       await setDoc(uref, {
         status: 'joined', name: u.displayName, profileImage: u.photoURL, lastSeen: serverTimestamp(),
@@ -66,19 +68,6 @@ export default function Home() {
     }
     setAuthReady(true);
   }), []);
-
-  // Presence: heartbeat while the tab is open, offline on leave.
-  // ponytail: 60s polling instead of RTDB onDisconnect — "online" = beat within 2 min
-  useEffect(() => {
-    if (!myEmail) return;
-    const pref = doc(db, 'presence', myEmail);
-    const beat = (state: string) => setDoc(pref, { state, lastActive: serverTimestamp() }).catch(() => {});
-    beat('online');
-    const id = setInterval(() => beat('online'), 60_000);
-    const off = () => beat('offline');
-    window.addEventListener('pagehide', off);
-    return () => { clearInterval(id); window.removeEventListener('pagehide', off); off(); };
-  }, [myEmail]);
 
   // The whole packing list lives in one doc: lists/{email} { items: [...] },
   // created at the moment the user first joins.
@@ -122,7 +111,7 @@ export default function Home() {
     : view === 'packed' ? items.filter((i) => i.packed)
     : items.filter((i) => i.category === view);
 
-  const viewLabel = view === 'users' ? 'Users' : VIEWS.find((v) => v.id === view)?.label ?? view;
+  const viewLabel = VIEWS.find((v) => v.id === view)?.label ?? view;
 
   const toggleOpen = (id: string) => { setTier('All'); setOpenId(openId === id ? null : id); };
 
@@ -156,9 +145,7 @@ export default function Home() {
         </button>
       ))}
       {role === 'admin' && (
-        <button className={`nav-btn${view === 'users' ? ' active' : ''}`} onClick={() => nav('users')}>
-          <span>👥</span> Users
-        </button>
+        <Link className="nav-btn" href="/Users"><span>👥</span> Users</Link>
       )}
       <div className="side-label">Categories</div>
       {cats.map((c) => (
@@ -197,25 +184,20 @@ export default function Home() {
         </div>
 
         <main>
-          {view !== 'users' && (
-            <div className="progress-wrap">
-              <div className="page-title">{viewLabel}</div>
-              <div className="progress-bar"><div className="progress-fill" style={{ width: `${(packed / items.length) * 100}%` }} /></div>
-              <div className="progress-label">{packed} of {items.length} items done</div>
-            </div>
-          )}
+          <div className="progress-wrap">
+            <div className="page-title">{viewLabel}</div>
+            <div className="progress-bar"><div className="progress-fill" style={{ width: `${(packed / items.length) * 100}%` }} /></div>
+            <div className="progress-label">{packed} of {items.length} items done</div>
+          </div>
 
           <AnimatePresence mode="wait">
             <motion.div key={view} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
-              {view === 'users'
-                ? <UsersPanel me={user} />
-                : view === 'starred'
+              {view === 'starred'
                 ? <Watchlist items={filtered} onPatch={patchItem} />
                 : <GroupedList items={filtered} cats={cats} onPatch={patchItem} onRemove={removeItem} openId={openId} toggleOpen={toggleOpen} tier={tier} setTier={setTier} grouped={view === 'all' || view === 'in' || view === 'de' || view === 'packed'} />}
             </motion.div>
           </AnimatePresence>
 
-          {view !== 'users' && (
           <form className="add-form" onSubmit={addItem}>
             <input placeholder="Add an item…" value={newName} onChange={(e) => setNewName(e.target.value)} />
             <select value={newCat || cats[0]} onChange={(e) => setNewCat(e.target.value)}>
@@ -223,7 +205,6 @@ export default function Home() {
             </select>
             <button type="submit">Add</button>
           </form>
-          )}
 
           <p className="disclaimer">
             Prices are typical market estimates; sale dates are expected windows based on previous years.
@@ -232,95 +213,6 @@ export default function Home() {
         </main>
       </div>
     </div>
-  );
-}
-
-/* ---------- Admin: users, invites, presence ---------- */
-type Profile = { id: string; email?: string; name?: string; profileImage?: string; type?: string; status?: string; lastSeen?: any; invitedBy?: string };
-
-function UsersPanel({ me }: { me: User }) {
-  const [users, setUsers] = useState<Profile[]>([]);
-  const [presence, setPresence] = useState<Record<string, any>>({});
-  const [email, setEmail] = useState('');
-  const [type, setType] = useState('member');
-
-  useEffect(() => {
-    const subs = [
-      onSnapshot(collection(db, 'users'), (s) => setUsers(s.docs.map((d) => ({ id: d.id, ...d.data() })))),
-      onSnapshot(collection(db, 'presence'), (s) => setPresence(Object.fromEntries(s.docs.map((d) => [d.id, d.data()])))),
-    ];
-    return () => subs.forEach((u) => u());
-  }, []);
-
-  const online = (em: string) => {
-    const p = presence[em];
-    return p?.state === 'online' && p.lastActive?.toMillis?.() > Date.now() - 2 * 60_000;
-  };
-
-  // Inviting = creating the users doc; it flips to 'joined' on their first sign-in
-  const invite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const em = email.trim().toLowerCase();
-    if (!em) return;
-    await setDoc(doc(db, 'users', em), { email: em, type, status: 'invited', invitedBy: me.email, invitedAt: serverTimestamp() });
-    setEmail('');
-  };
-
-  const joined = users.filter((u) => u.status === 'joined');
-  const pending = users.filter((u) => u.status !== 'joined');
-
-  return (
-    <>
-      <form className="add-form" onSubmit={invite}>
-        <input type="email" placeholder="Invite by email…" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <select value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="member">member</option>
-          <option value="admin">admin</option>
-        </select>
-        <button type="submit">Invite</button>
-      </form>
-
-      {joined.map((u) => (
-        <div className="watch-card" key={u.id}>
-          <div className="watch-top">
-            {u.profileImage && <img src={u.profileImage} alt="" width={32} height={32} style={{ borderRadius: '50%' }} referrerPolicy="no-referrer" />}
-            <h3>
-              <span style={{ color: online(u.id) ? '#22c55e' : 'var(--muted)', marginRight: 6 }}>●</span>
-              {u.name ?? u.email}
-            </h3>
-            <select
-              value={u.type ?? 'member'}
-              disabled={u.id === me.email?.toLowerCase()} // don't demote yourself
-              onChange={(e) => updateDoc(doc(db, 'users', u.id), { type: e.target.value })}
-            >
-              <option value="member">member</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
-          <div className="meta-line">
-            {u.email} · {online(u.id) ? 'online now' : u.lastSeen?.toDate ? `last seen ${u.lastSeen.toDate().toLocaleString()}` : 'never seen'}
-          </div>
-          {u.id !== me.email?.toLowerCase() && (
-            <button
-              className="delete-btn"
-              onClick={() => { deleteDoc(doc(db, 'users', u.id)); deleteDoc(doc(db, 'lists', u.id)); }}
-            >Remove user</button>
-          )}
-        </div>
-      ))}
-
-      {pending.length > 0 && <div className="side-label">Pending invites</div>}
-      {pending.map((u) => (
-        <div className="watch-card" key={u.id}>
-          <div className="watch-top">
-            <h3>{u.id}</h3>
-            <span className="badge">{u.type}</span>
-          </div>
-          <div className="meta-line">invited by {u.invitedBy ?? '—'} · not signed in yet</div>
-          <button className="delete-btn" onClick={() => deleteDoc(doc(db, 'users', u.id))}>Revoke invite</button>
-        </div>
-      ))}
-    </>
   );
 }
 

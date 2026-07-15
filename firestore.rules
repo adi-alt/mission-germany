@@ -9,6 +9,13 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(myEmail())).data.type == 'admin';
     }
 
+    // Starter packing list copied into lists/{email} at join time.
+    // Written only by the admin script — there's no server to seed from otherwise.
+    match /config/{id} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     // Keyed by lowercase email. Doubles as the invite:
     // admins create it with status 'invited'; first sign-in flips it to 'joined'.
     // Fields: email, name, lastSeen, profileImage, type, status

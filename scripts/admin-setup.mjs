@@ -89,8 +89,19 @@ const val = (v) =>
   : { stringValue: v };
 const fields = (obj) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, val(v)]));
 
-// Both writes are create-only (exists:false): reruns never reset live data
+const starter = seedItems().map((it, i) => ({ id: `item-${String(i).padStart(3, '0')}`, ...it }));
+
+// Backfill: any user list that is still empty gets the starter items
+async function listDocs(col) {
+  const res = await fetch(`https://firestore.googleapis.com/v1/${DOCS}/${col}?pageSize=300`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return (await res.json()).documents ?? [];
+}
+const emptyLists = (await listDocs('lists')).filter((d) => !(d.fields?.items?.arrayValue?.values?.length > 0));
+
 const writes = [
+  // create-only (exists:false): reruns never reset live data
   {
     update: {
       name: `${DOCS}/users/${BOOTSTRAP_ADMIN}`,
@@ -101,12 +112,15 @@ const writes = [
   {
     update: {
       name: `${DOCS}/lists/${BOOTSTRAP_ADMIN}`,
-      fields: fields({ items: seedItems().map((it, i) => ({ id: `item-${String(i).padStart(3, '0')}`, ...it })) }),
+      fields: fields({ items: starter }),
     },
     currentDocument: { exists: false },
   },
+  // template copied into lists/{email} when a user joins; overwritten on rerun so it stays current
+  { update: { name: `${DOCS}/config/seedList`, fields: fields({ items: starter }) } },
+  ...emptyLists.map((d) => ({ update: { name: d.name, fields: fields({ items: starter }) } })),
 ];
 const res = await api(`https://firestore.googleapis.com/v1/${DOCS}:batchWrite`, 'POST', { writes });
 const failed = res.status.filter((s) => s.code && s.code !== 6); // 6 = already exists, fine
 if (failed.length) throw new Error(`batchWrite failures: ${JSON.stringify(failed.slice(0, 3))}`);
-console.log(`✓ admin user ${BOOTSTRAP_ADMIN} + seeded packing list ready`);
+console.log(`✓ admin user + seedList template ready, ${emptyLists.length} empty list(s) backfilled`);
