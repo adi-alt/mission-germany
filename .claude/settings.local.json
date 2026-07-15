@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx cap *)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"next-server\")",
+      "Bash(rm -rf .next .next-build)",
+      "Bash(curl -s -o /dev/null -w \"dev still ok: %{http_code}\\\\n\" http://localhost:3000)",
+      "Bash(command -v firebase)",
+      "Bash(firebase login:list)",
+      "Read(//Users/softage/Documents/**)",
+      "Read(//Users/softage/Documents/aditya/**)",
+      "Read(//documents/**)",
+      "Read(//Users/softage/**)",
+      "Bash(node scripts/admin-setup.mjs \"/Users/softage/Downloads/mission-germany-fcfb4-firebase-adminsdk-fbsvc-d8eca317d3.json\")",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

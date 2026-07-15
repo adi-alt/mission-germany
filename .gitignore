@@ -1,0 +1,20 @@
+# deps / builds
+node_modules/
+.next/
+.next-build/
+out/
+
+# env & secrets — never commit credentials or service-account keys
+.env*.local
+*service-account*.json
+*adminsdk*.json
+
+# capacitor / ios
+ios/App/Pods/
+ios/App/build/
+ios/DerivedData/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

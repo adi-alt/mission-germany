@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function isSelf(email) { return signedIn() && myEmail() == email; }
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(myEmail())).data.type == 'admin';
+    }
+
+    // Keyed by lowercase email. Doubles as the invite:
+    // admins create it with status 'invited'; first sign-in flips it to 'joined'.
+    // Fields: email, name, lastSeen, profileImage, type, status
+    match /users/{email} {
+      allow read: if isSelf(email) || isAdmin();
+      allow create, delete: if isAdmin();
+      // Users can't change their own role; admins can change anyone's
+      allow update: if (isSelf(email) && request.resource.data.type == resource.data.type) || isAdmin();
+    }
+
+    // One doc per user holding their whole packing list as an array
+    match /lists/{email} {
+      allow read, write: if isSelf(email);
+      allow delete: if isAdmin();
+    }
+
+    match /presence/{email} {
+      allow read: if signedIn();
+      allow write: if isSelf(email);
+    }
+  }
+}
