@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import { auth, db, recoverFromCacheError } from '@/lib/firebase';
 import type { SeedItem } from '@/lib/seed'; // type only — item data lives in Firestore
 import { basePrice, forecast } from '@/lib/recs';
 
@@ -68,6 +68,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }, { merge: true });
       setUser(u);
     } catch (e: any) {
+      if (recoverFromCacheError(e)) return; // broken IndexedDB cache — clearing + reloading
       await signOut(auth);
       setUser(null);
       alert(e.message);
@@ -82,7 +83,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const list = ((snap.data()?.items ?? []) as Item[]).slice();
       list.sort((a, b) => a.order - b.order);
       setItems(list);
-    });
+    }, (e) => recoverFromCacheError(e));
   }, [myEmail]);
 
   const save = async (next: Item[]) => { await setDoc(doc(db, 'lists', myEmail), { items: next }); };

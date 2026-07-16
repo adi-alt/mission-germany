@@ -31,3 +31,24 @@ function makeDb() {
 }
 export const db = makeDb();
 export const googleProvider = new GoogleAuthProvider();
+
+// Recovery for a corrupted/blocked IndexedDB cache ("Version change transaction
+// was aborted…", code=unavailable): delete the cache DB and reload — once.
+// Returns true if recovery was triggered (caller should stop what it's doing).
+export function recoverFromCacheError(e: unknown): boolean {
+  const msg = String((e as any)?.message ?? e);
+  if (!/IndexedDb|indexeddb|unavailable/i.test(msg)) return false;
+  if (sessionStorage.getItem('fs-cache-reset')) return false; // already tried once this session
+  sessionStorage.setItem('fs-cache-reset', '1');
+  const names = [`firestore/[DEFAULT]/${firebaseConfig.projectId}/main`];
+  (indexedDB.databases?.() ?? Promise.resolve([]))
+    .then((dbs) => {
+      const found = dbs.map((d) => d.name).filter((n): n is string => !!n?.includes('firestore'));
+      return Promise.all([...new Set([...names, ...found])].map((n) => new Promise((res) => {
+        const req = indexedDB.deleteDatabase(n);
+        req.onsuccess = req.onerror = req.onblocked = () => res(null);
+      })));
+    })
+    .then(() => location.reload());
+  return true;
+}
